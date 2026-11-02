@@ -4093,6 +4093,7 @@ describe('OrcaTeamService.reconcileLostLocalWorker', () => {
     observedUpdatedAt: 5_000,
     turnStartedAt,
     notifyLead: true,
+    assertCurrent: async () => {},
     ...overrides,
   });
   function createLostDeps(overrides: Partial<OrcaTeamServiceDeps> = {}) {
@@ -4102,7 +4103,7 @@ describe('OrcaTeamService.reconcileLostLocalWorker', () => {
     });
     harness.setWorker(createWorker({ status: 'running' }));
     if (!overrides.markWorkerErrorIfRunningSince) {
-      harness.deps.markWorkerErrorIfRunningSince = vi.fn(async (workerId) => {
+      harness.deps.markWorkerErrorIfRunningSince = vi.fn(async ({ workerId }) => {
         const worker = harness.getWorker();
         if (worker.id !== workerId || worker.status !== 'running') return false;
         harness.setWorker({ ...worker, status: 'error' });
@@ -4141,7 +4142,10 @@ describe('OrcaTeamService.reconcileLostLocalWorker', () => {
 
     await expect(service.reconcileLostLocalWorker(lostParams())).resolves.toBe('marked');
     expect(getWorker().status).toBe('error');
-    expect(deps.markWorkerErrorIfRunningSince).toHaveBeenCalledWith('worker-1', 5_000);
+    // The CAS carries the observed turn so a peer's newer turn or lease makes it lose.
+    expect(deps.markWorkerErrorIfRunningSince).toHaveBeenCalledWith({
+      workerId: 'worker-1', sessionId: 'worker-session-1', observedUpdatedAt: 5_000, turnStartedAt,
+    });
     expect(deps.broadcastOrcaWorkerChanged).toHaveBeenCalledWith('lead-1');
     expect(deps.sendAutoBridgeToLead).toHaveBeenCalledTimes(1);
     const [leadSessionId, notice, workerId] = vi.mocked(deps.sendAutoBridgeToLead).mock.calls[0]!;
@@ -4153,6 +4157,30 @@ describe('OrcaTeamService.reconcileLostLocalWorker', () => {
     // A repeated pass no longer wins the CAS, so the Lead is not notified twice.
     await expect(service.reconcileLostLocalWorker(lostParams())).resolves.toBe('changed');
     expect(deps.sendAutoBridgeToLead).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    // The switch lands while the service waits for its locks / lease probe: nothing is written.
+    ['while the locks are awaited', 0, 'running', 'rejects'],
+    // The switch lands right after the CAS: the old owner's row stays error, nothing leaks out.
+    ['right after the error CAS', 1, 'error', 'marked'],
+  ] as const)('keeps an account switch %s from reaching the new owner', async (_name, okChecks, status, outcome) => {
+    const { deps, service, getWorker } = createLostDeps();
+    let checks = 0;
+    const assertCurrent = vi.fn(async () => {
+      if (checks++ >= okChecks) throw new Error('Account changed');
+    });
+
+    const reconciling = service.reconcileLostLocalWorker(lostParams({ assertCurrent }));
+    if (outcome === 'rejects') {
+      await expect(reconciling).rejects.toThrow('Account changed');
+      expect(deps.markWorkerErrorIfRunningSince).not.toHaveBeenCalled();
+    } else {
+      await expect(reconciling).resolves.toBe('marked');
+    }
+    expect(getWorker().status).toBe(status);
+    expect(deps.broadcastOrcaWorkerChanged).not.toHaveBeenCalled();
+    expect(deps.sendAutoBridgeToLead).not.toHaveBeenCalled();
   });
 
   it('marks a Worker whose lost turn the Lead did not assign without waking the Lead', async () => {

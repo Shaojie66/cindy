@@ -50,6 +50,10 @@ export function createOrcaLostRuntimeReconciler(
       });
       return false;
     }
+    // Carried into the service so the owner is re-checked after its locks, not only here.
+    const assertCurrent = async (): Promise<void> => {
+      if (deps.readClientEpoch() !== epoch) throw new Error('Account changed');
+    };
     let failed = false;
     for (const candidate of candidates) {
       // An account switch replaces the database; never write the old owner's rows into it.
@@ -68,6 +72,7 @@ export function createOrcaLostRuntimeReconciler(
           observedUpdatedAt: candidate.updatedAt,
           turnStartedAt: candidate.turnStartedAt,
           notifyLead,
+          assertCurrent,
         });
         if (result !== 'marked') {
           deps.log.info('orca lost worker runtime reconciliation skipped', {

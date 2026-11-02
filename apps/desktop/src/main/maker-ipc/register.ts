@@ -16229,8 +16229,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // 归档 / 显式 idle 会释放 runtime；先取消未落地的后台预热，避免释放后被重新拉起。
     cancelWorkerResume: (sessionId) => orcaWorkerResumeScheduler.cancel(sessionId),
     updateWorkerStatus,
-    markWorkerErrorIfRunningSince: (workerId, observedUpdatedAt) =>
-      markWorkerErrorIfRunningSince(workerId, observedUpdatedAt),
+    markWorkerErrorIfRunningSince: (cas) => markWorkerErrorIfRunningSince(cas),
     // Exact-owner turn leases: a live shared-userData peer's turn keeps the Worker running.
     isSessionTurnLeased: (sessionId) => sessionTurnLeaseTracker.isTurnActive(sessionId),
     updateWorkerIdentity,

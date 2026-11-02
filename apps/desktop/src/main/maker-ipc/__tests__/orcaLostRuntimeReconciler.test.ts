@@ -12,6 +12,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { LostRuntimeWorkerCandidate, WorkerTurnInputOrigin } from '../../localDb/orcaTeamStore.js';
+import type { LostLocalWorkerParams } from '../orcaTeamService.js';
 import {
   createOrcaLostRuntimeReconciler,
   type OrcaLostRuntimeReconcilerDeps,
@@ -33,7 +34,7 @@ function candidate(overrides: Partial<LostRuntimeWorkerCandidate> = {}): LostRun
 
 function createHarness(overrides: Partial<OrcaLostRuntimeReconcilerDeps> = {}) {
   let epoch: number | null = 1;
-  const reconcileLostLocalWorker = vi.fn(async () => 'marked' as const);
+  const reconcileLostLocalWorker = vi.fn(async (_params: LostLocalWorkerParams) => 'marked' as const);
   const deps: OrcaLostRuntimeReconcilerDeps = {
     readClientEpoch: () => epoch,
     readBootAt: () => BOOT_AT,
@@ -79,6 +80,7 @@ describe('createOrcaLostRuntimeReconciler', () => {
       observedUpdatedAt: 5_000,
       turnStartedAt: 6_000,
       notifyLead,
+      assertCurrent: expect.any(Function),
     });
   });
 
@@ -121,13 +123,18 @@ describe('createOrcaLostRuntimeReconciler', () => {
         candidate({ workerId: 'worker-2', sessionId: 'worker-session-2' }),
       ]),
     });
-    harness.reconcileLostLocalWorker.mockImplementation(async () => {
+    let carried: (() => Promise<void>) | undefined;
+    harness.reconcileLostLocalWorker.mockImplementation(async (params) => {
+      carried = params.assertCurrent;
+      await expect(params.assertCurrent()).resolves.toBeUndefined();
       harness.setEpoch(2);
       return 'marked';
     });
 
     await expect(harness.reconciler.reconcileCurrentOwner()).resolves.toBe(false);
     expect(harness.reconcileLostLocalWorker).toHaveBeenCalledTimes(1);
+    // The check handed to the service also turns false, so its post-lock writes stop too.
+    await expect(carried!()).rejects.toThrow('Account changed');
   });
 
   it('retries a failed pass on the next ready signal', async () => {

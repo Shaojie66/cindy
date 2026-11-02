@@ -615,18 +615,37 @@ describe('orcaTeamStore', () => {
     }
   });
 
-  it('marks a lost Worker error only while the observed running row is unchanged', async () => {
+  const LOST_CAS = {
+    workerId: 'worker-1', sessionId: 'worker-session-1', observedUpdatedAt: 5_000, turnStartedAt: 6_000,
+  } as const;
+
+  it.each([
+    ['nothing moved since the observation', null, {}, true],
+    ['the Worker row was written again', "UPDATE orca_workers SET updated_at = 5001 WHERE id = 'worker-1'", {}, false],
+    // A shared-userData peer starting a turn leaves the running Worker row untouched.
+    ['a peer started a newer turn', "UPDATE sessions SET active_turn_started_at = 7000 WHERE id = 'worker-session-1'", {}, false],
+    ['the observed turn has since ended', "UPDATE sessions SET last_turn_ended_at = 6500 WHERE id = 'worker-session-1'", {}, false],
+    ['the session was cleared', "UPDATE sessions SET cleared_at = 6500 WHERE id = 'worker-session-1'", {}, false],
+    [
+      'a peer holds the turn lease',
+      "INSERT INTO messages (id, client_id, session_id, role, content, created_at, rewind_at) VALUES ('lease-1', 'session:turn-lease:v1:peer', 'worker-session-1', 'assistant', '', 7000, 7000)",
+      {},
+      false,
+    ],
+    ['the session id does not belong to the Worker', null, { sessionId: 'worker-session-2' }, false],
+  ] as const)('marks a lost Worker error only when %s', async (_name, mutation, casOverride, marked) => {
     const { markWorkerErrorIfRunningSince } = await import('../orcaTeamStore.js');
     const client = createTestDbClient();
     setCurrentDbClient(client, 'test-user');
     await seedLostRuntimeWorker(client);
+    if (mutation) await client.exec(mutation);
 
-    await expect(markWorkerErrorIfRunningSince('worker-1', 4_999, 20_000)).resolves.toBe(false);
-    await expect(markWorkerErrorIfRunningSince('worker-1', 5_000, 20_000)).resolves.toBe(true);
-    await expect(markWorkerErrorIfRunningSince('worker-1', 5_000, 30_000)).resolves.toBe(false);
-    await expect(
-      client.queryOne('SELECT status, updated_at, idle_since FROM orca_workers WHERE id = ?', ['worker-1']),
-    ).resolves.toEqual({ status: 'error', updated_at: 20_000, idle_since: null });
+    await expect(markWorkerErrorIfRunningSince({ ...LOST_CAS, ...casOverride }, 20_000)).resolves.toBe(marked);
+    const row = await client.queryOne<{ status: string; idle_since: number | null }>(
+      'SELECT status, idle_since FROM orca_workers WHERE id = ?',
+      ['worker-1'],
+    );
+    expect(row).toEqual({ status: marked ? 'error' : 'running', idle_since: null });
   });
 
   it('reads the input that started a lost turn, skipping hidden and out-of-turn rows', async () => {

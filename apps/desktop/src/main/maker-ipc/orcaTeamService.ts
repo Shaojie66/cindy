@@ -375,8 +375,16 @@ export interface OrcaTeamServiceDeps {
   /** 取消该 worker session 尚未落地的后台唤醒（focus 预热）；释放 runtime 前调用。 */
   cancelWorkerResume?(sessionId: string): void;
   updateWorkerStatus(workerId: string, status: OrcaWorkerStatus): Promise<void>;
-  /** Startup reconciliation: CAS a Worker the previous process left running to error. */
-  markWorkerErrorIfRunningSince?(workerId: string, observedUpdatedAt: number): Promise<boolean>;
+  /**
+   * Startup reconciliation: CAS a Worker the previous process left running to error, only while
+   * the observed turn is still the open one and no turn lease exists.
+   */
+  markWorkerErrorIfRunningSince?(cas: {
+    workerId: string;
+    sessionId: string;
+    observedUpdatedAt: number;
+    turnStartedAt: number;
+  }): Promise<boolean>;
   /** True while this process or a live shared-userData peer holds the session's turn lease. */
   isSessionTurnLeased?(sessionId: string): Promise<boolean>;
   markWorkerIdle(workerId: string): Promise<void>;
@@ -570,6 +578,11 @@ export interface LostLocalWorkerParams {
   turnStartedAt: number;
   /** Only a turn the Lead assigned owes the Lead a notice. */
   notifyLead: boolean;
+  /**
+   * Rejects once the DB owner the candidate was read from is no longer current. Checked after
+   * the locks are held (before the CAS) and again before broadcast and notice.
+   */
+  assertCurrent: () => Promise<void>;
 }
 
 /** `marked`: now error; `runtime-active`: something may still own it; `changed`: the row moved on. */
@@ -2378,12 +2391,31 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
           if (await deps.hasPendingWorkerInput(sessionId)) return 'runtime-active';
           // Fail closed: a lease whose owner may still be alive counts as a running turn.
           if (await isLeased(sessionId)) return 'runtime-active';
-          if (!(await markError(workerId, params.observedUpdatedAt))) return 'changed';
-          deps.broadcastOrcaWorkerChanged(params.leadSessionId);
-          return 'marked';
+          // The waits above can span an account switch; never write the old owner's row into
+          // the new database (orca-team-architecture.md「Worker 运行态」#13).
+          await params.assertCurrent();
+          const marked = await markError({
+            workerId,
+            sessionId,
+            observedUpdatedAt: params.observedUpdatedAt,
+            turnStartedAt: params.turnStartedAt,
+          });
+          return marked ? 'marked' : 'changed';
         });
       });
       if (result !== 'marked') return result;
+      try {
+        await params.assertCurrent();
+      } catch (err) {
+        // The old owner's row is already error; only its broadcast and notice are dropped.
+        deps.log.warn('orca lost worker runtime reconciled across an account switch', {
+          workerId,
+          sessionId,
+          err: err instanceof Error ? err.message : String(err),
+        });
+        return result;
+      }
+      deps.broadcastOrcaWorkerChanged(params.leadSessionId);
       deps.log.warn('orca lost worker runtime reconciled', {
         workerId,
         sessionId,

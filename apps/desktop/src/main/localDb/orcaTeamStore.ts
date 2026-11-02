@@ -9,6 +9,7 @@ import { getDbClient, getCurrentDbClientSnapshot, type CurrentDbClientSnapshot }
 import type { OrcaRemoteWorkerProxySessionSeed } from './client/tx/types.js';
 import { messages, orcaWorkers, orcaTeams, orcaWorkerCreationReservations, orcaRemoteOpens, sessions } from './schema.js';
 import { createLogger } from '../logger.js';
+import { SESSION_TURN_LEASE_CLIENT_ID_PREFIX } from '../maker-ipc/sessionTurnLease.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
 import { tapWindowBroadcast } from '../device-link/broadcast-tap.js';
 import { notifyAgentIslandSessionPatch } from './agentIslandSessionPatch.js';
@@ -684,18 +685,48 @@ export async function listLostRuntimeWorkerCandidates(
   );
 }
 
-/** Marks a lost Worker runtime as error only while no other write has touched the row. */
+export interface LostWorkerErrorCas {
+  workerId: string;
+  sessionId: string;
+  observedUpdatedAt: number;
+  /** The interrupted turn the candidate query observed. */
+  turnStartedAt: number;
+}
+
+/**
+ * Marks a lost Worker runtime as error only while nothing has moved since it was observed.
+ * A shared-userData peer starting a new turn leaves the running Worker row untouched, so the
+ * same statement also requires the observed turn to still be the open one and no turn lease
+ * to exist (dead-owner leases were cleared by the liveness check just before).
+ */
 export async function markWorkerErrorIfRunningSince(
-  workerId: string,
-  observedUpdatedAt: number,
+  cas: LostWorkerErrorCas,
   now = Date.now(),
 ): Promise<boolean> {
   // Drizzle proxy UPDATE ... RETURNING returns no rows; use DbClient changes as the CAS result.
   const result = await getDbClient().exec(
     `UPDATE orca_workers
         SET status = 'error', updated_at = ?
-      WHERE id = ? AND status = 'running' AND idle_since IS NULL AND updated_at = ?`,
-    [now, workerId, observedUpdatedAt],
+      WHERE id = ? AND session_id = ? AND status = 'running' AND idle_since IS NULL AND updated_at = ?
+        AND EXISTS (
+          SELECT 1 FROM sessions s
+           WHERE s.id = ?
+             AND s.active_turn_started_at = ?
+             AND s.active_turn_started_at > COALESCE(s.last_turn_ended_at, 0)
+             AND s.active_turn_started_at > COALESCE(s.cleared_at, 0))
+        AND NOT EXISTS (
+          SELECT 1 FROM messages m
+           WHERE m.session_id = ? AND m.client_id LIKE ?)`,
+    [
+      now,
+      cas.workerId,
+      cas.sessionId,
+      cas.observedUpdatedAt,
+      cas.sessionId,
+      cas.turnStartedAt,
+      cas.sessionId,
+      `${SESSION_TURN_LEASE_CLIENT_ID_PREFIX}%`,
+    ],
   );
   return result.changes === 1;
 }
