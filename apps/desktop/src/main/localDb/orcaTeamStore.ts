@@ -1,5 +1,5 @@
 import { BrowserWindow } from 'electron';
-import { and, desc, eq, gt, inArray, isNotNull, isNull, ne } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, ne, sql } from 'drizzle-orm';
 import { createId } from '@paralleldrive/cuid2';
 import { orcaWorkerSessionTitle } from '@cindy/maker-shared/orca-team';
 import type { OrcaRemotePendingReport } from '../../shared/orcaRemoteWorker.js';
@@ -7,7 +7,7 @@ import { parseOrcaRemoteLead } from '../../shared/orcaRemoteWorker.js';
 
 import { getDbClient, getCurrentDbClientSnapshot, type CurrentDbClientSnapshot } from './client/current.js';
 import type { OrcaRemoteWorkerProxySessionSeed } from './client/tx/types.js';
-import { orcaWorkers, orcaTeams, orcaWorkerCreationReservations, orcaRemoteOpens, sessions } from './schema.js';
+import { messages, orcaWorkers, orcaTeams, orcaWorkerCreationReservations, orcaRemoteOpens, sessions } from './schema.js';
 import { createLogger } from '../logger.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
 import { tapWindowBroadcast } from '../device-link/broadcast-tap.js';
@@ -628,6 +628,161 @@ export async function markWorkerIdleIfStatus(
     .where(and(eq(orcaWorkers.id, workerId), eq(orcaWorkers.status, expectedStatus)))
     .run();
   return result.changes > 0;
+}
+
+/** A local Worker that a previous Main process may have left `running` without a runtime. */
+export interface LostRuntimeWorkerCandidate {
+  workerId: string;
+  teamId: string;
+  sessionId: string;
+  leadSessionId: string;
+  /** Observed `orca_workers.updated_at`; the error CAS only succeeds while it is unchanged. */
+  updatedAt: number;
+  /** `sessions.active_turn_started_at` of the turn that never ended. */
+  turnStartedAt: number;
+}
+
+/**
+ * Durable half of the startup reconciliation (orca-team-architecture.md, Worker 运行态 #13):
+ * a Worker whose runtime is local, that was marked running before this process booted, and
+ * whose last turn also started before boot and never ended. Runtime checks (turn lease,
+ * live session, queued input) stay with the caller because they are not in SQLite alone.
+ */
+export async function listLostRuntimeWorkerCandidates(
+  bootAt: number,
+): Promise<LostRuntimeWorkerCandidate[]> {
+  const rows = await getDbClient()
+    .drizzle.select({
+      workerId: orcaWorkers.id,
+      teamId: orcaWorkers.teamId,
+      sessionId: orcaWorkers.sessionId,
+      leadSessionId: orcaTeams.leadSessionId,
+      updatedAt: orcaWorkers.updatedAt,
+      turnStartedAt: sessions.activeTurnStartedAt,
+    })
+    .from(orcaWorkers)
+    .innerJoin(orcaTeams, eq(orcaTeams.id, orcaWorkers.teamId))
+    .innerJoin(sessions, eq(sessions.id, orcaWorkers.sessionId))
+    .where(
+      and(
+        eq(orcaWorkers.status, 'running'),
+        isNull(orcaWorkers.idleSince),
+        // Device, SSH and remote-Agent Workers may still have a runtime elsewhere.
+        isNull(orcaWorkers.executionDeviceId),
+        isNull(sessions.remoteHostId),
+        isNull(sessions.agentDeviceId),
+        eq(orcaTeams.status, 'active'),
+        eq(sessions.status, 'active'),
+        lt(orcaWorkers.updatedAt, bootAt),
+        lt(sessions.activeTurnStartedAt, bootAt),
+        gt(sessions.activeTurnStartedAt, sql`COALESCE(${sessions.lastTurnEndedAt}, 0)`),
+        gt(sessions.activeTurnStartedAt, sql`COALESCE(${sessions.clearedAt}, 0)`),
+      ),
+    );
+  return rows.flatMap((row) =>
+    row.turnStartedAt === null ? [] : [{ ...row, turnStartedAt: row.turnStartedAt }],
+  );
+}
+
+/** Marks a lost Worker runtime as error only while no other write has touched the row. */
+export async function markWorkerErrorIfRunningSince(
+  workerId: string,
+  observedUpdatedAt: number,
+  now = Date.now(),
+): Promise<boolean> {
+  // Drizzle proxy UPDATE ... RETURNING returns no rows; use DbClient changes as the CAS result.
+  const result = await getDbClient().exec(
+    `UPDATE orca_workers
+        SET status = 'error', updated_at = ?
+      WHERE id = ? AND status = 'running' AND idle_since IS NULL AND updated_at = ?`,
+    [now, workerId, observedUpdatedAt],
+  );
+  return result.changes === 1;
+}
+
+export interface WorkerTurnInputOrigin {
+  kind: string | null;
+  senderSessionId: string | null;
+}
+
+function readInputOrigin(agentMeta: string | null): WorkerTurnInputOrigin & { autoResume: boolean } {
+  let meta: unknown = null;
+  try {
+    meta = agentMeta ? JSON.parse(agentMeta) : null;
+  } catch {
+    meta = null;
+  }
+  const record = meta && typeof meta === 'object' && !Array.isArray(meta)
+    ? (meta as Record<string, unknown>)
+    : {};
+  const origin = record.origin && typeof record.origin === 'object' && !Array.isArray(record.origin)
+    ? (record.origin as Record<string, unknown>)
+    : {};
+  return {
+    autoResume: record.autoResume === true,
+    kind: typeof origin.kind === 'string' ? origin.kind : null,
+    senderSessionId: typeof origin.senderSessionId === 'string' ? origin.senderSessionId : null,
+  };
+}
+
+const LOST_TURN_INPUT_SCAN_LIMIT = 20;
+
+/**
+ * Origin of the input that started a turn: the latest visible user row at or before the
+ * turn start, skipping hidden automatic resume rows. Null when no such row is found.
+ */
+export async function readWorkerLostTurnInputOrigin(
+  sessionId: string,
+  turnStartedAt: number,
+): Promise<WorkerTurnInputOrigin | null> {
+  const rows = await getDbClient()
+    .drizzle.select({ agentMeta: messages.agentMeta })
+    .from(messages)
+    .innerJoin(sessions, eq(sessions.id, messages.sessionId))
+    .where(
+      and(
+        eq(messages.sessionId, sessionId),
+        eq(messages.role, 'user'),
+        isNull(messages.rewindAt),
+        lte(messages.createdAt, turnStartedAt),
+        gt(messages.createdAt, sql`COALESCE(${sessions.clearedAt}, 0)`),
+      ),
+    )
+    .orderBy(desc(messages.createdAt), desc(sql`${messages}.rowid`))
+    .limit(LOST_TURN_INPUT_SCAN_LIMIT);
+  for (const row of rows) {
+    const origin = readInputOrigin(row.agentMeta);
+    if (origin.autoResume) continue;
+    return { kind: origin.kind, senderSessionId: origin.senderSessionId };
+  }
+  return null;
+}
+
+/**
+ * A Lead may be woken only while it is active and not itself waiting on the user's
+ * continue/ignore choice for a turn that began before this process booted.
+ */
+export async function isLeadSessionReadyForWorkerNotice(
+  leadSessionId: string,
+  bootAt: number,
+): Promise<boolean> {
+  const [row] = await getDbClient()
+    .drizzle.select({
+      status: sessions.status,
+      startedAt: sessions.activeTurnStartedAt,
+      endedAt: sessions.lastTurnEndedAt,
+      clearedAt: sessions.clearedAt,
+    })
+    .from(sessions)
+    .where(eq(sessions.id, leadSessionId))
+    .limit(1);
+  if (!row || row.status !== 'active') return false;
+  const interrupted =
+    row.startedAt !== null &&
+    row.startedAt < bootAt &&
+    row.startedAt > (row.endedAt ?? 0) &&
+    row.startedAt > (row.clearedAt ?? 0);
+  return !interrupted;
 }
 
 /** Restores a raced done acknowledgement only while the worker is still idle. */

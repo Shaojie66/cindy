@@ -572,11 +572,15 @@ import {
   getSessionOrcaRole,
   getWorkerLink,
   isActiveWorkerStatus,
+  isLeadSessionReadyForWorkerNotice,
   isOrphanedTeamInit,
+  listLostRuntimeWorkerCandidates,
   listWorkersByLead,
   markTeamEnded,
   markWorkersStatusByTeam,
+  markWorkerErrorIfRunningSince,
   markWorkerIdleIfStatus,
+  readWorkerLostTurnInputOrigin,
   restoreWorkerDoneIfIdle,
   reconcileInactiveTeamWorkersForLead,
   releaseWorkerCreationReservation,
@@ -780,6 +784,8 @@ import {
   ORCA_IDLE_RELEASE_STATUSES,
   type OrcaIdleReleaseWatcher,
 } from './orcaIdleReleaseWatcher.js';
+import { createOrcaLostRuntimeReconciler } from './orcaLostRuntimeReconciler.js';
+import { getSessionInterruptionBootAt } from '../localDb/sessionInterruptionBoot.js';
 import { createOrcaWorkerResumeScheduler } from './orcaWorkerResumeScheduler.js';
 import {
   createPiIdleReleaseWatcher,
@@ -3177,6 +3183,27 @@ export async function restoreOrcaRemoteWorkersForCurrentOwner(): Promise<void> {
   if (!remote || !tryGetDbClient()) return;
   await remote.start().catch((err) =>
     log.warn('orca remote workers: restore failed', {
+      err: err instanceof Error ? err.message : String(err),
+    }),
+  );
+}
+
+/** Worker 运行态 #13：上一代进程退出时 runtime 随之消失的本机 running Worker。 */
+const orcaLostRuntimeReconciler = createOrcaLostRuntimeReconciler({
+  readClientEpoch: () => getCurrentDbClientSnapshot()?.clientEpoch ?? null,
+  readBootAt: getSessionInterruptionBootAt,
+  getTeamService: () => orcaTeamServiceForEvents,
+  listCandidates: listLostRuntimeWorkerCandidates,
+  readTurnInputOrigin: readWorkerLostTurnInputOrigin,
+  isLeadReadyForNotice: isLeadSessionReadyForWorkerNotice,
+  log,
+});
+
+/** 按当前账号做一次启动对账；数据库或团队服务未就绪时跳过，由另一个调用点补上。 */
+export async function reconcileLostOrcaWorkersForCurrentOwner(): Promise<void> {
+  if (!tryGetDbClient()) return;
+  await orcaLostRuntimeReconciler.reconcileCurrentOwner().catch((err) =>
+    log.warn('orca lost worker runtime reconciliation failed', {
       err: err instanceof Error ? err.message : String(err),
     }),
   );
@@ -16202,6 +16229,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // 归档 / 显式 idle 会释放 runtime；先取消未落地的后台预热，避免释放后被重新拉起。
     cancelWorkerResume: (sessionId) => orcaWorkerResumeScheduler.cancel(sessionId),
     updateWorkerStatus,
+    markWorkerErrorIfRunningSince: (workerId, observedUpdatedAt) =>
+      markWorkerErrorIfRunningSince(workerId, observedUpdatedAt),
+    // Exact-owner turn leases: a live shared-userData peer's turn keeps the Worker running.
+    isSessionTurnLeased: (sessionId) => sessionTurnLeaseTracker.isTurnActive(sessionId),
     updateWorkerIdentity,
     markWorkerIdle: async (workerId) => {
       const now = Date.now();
@@ -16431,6 +16462,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   orcaTeamServiceForEvents = orcaTeamService;
   // 数据库可能晚于本注册就绪；bootstrap 在接管数据库后会再调一次，两种顺序都覆盖。
   void restoreOrcaRemoteWorkersForCurrentOwner();
+  void reconcileLostOrcaWorkersForCurrentOwner();
   ipcMain.handle(ORCA_EXECUTION_DEVICES_CHANNEL, async (event) => {
     if (!isDeviceLinkInvoke()) assertTrustedAppRendererEvent(event);
     // 共享任务访客看不到本账号的设备目录。
