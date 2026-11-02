@@ -119,6 +119,8 @@
   为准。
 - 修改 Orca 多 Agent 协同时，必须先读
   `docs/dev-rules/orca-team-architecture.md`。
+  本 fork 的首个串行试点、证据合同与阶段间恢复演练计划见
+  `docs/dev-rules/orchestration-pilot.md`；真实运行仍须按计划核实授权与模型来源。
 - 修改任何进入模型 system 段的提示词前（无论文件位于哪个模块），必须先读
   `docs/dev-rules/maker-core-and-agent-behavior.md`。
 - 修改 PI harness 集成（`packages/maker-core/src/agents/pi/**`、`pi-host.ts`、
