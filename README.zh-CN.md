@@ -1,135 +1,92 @@
-<p align="center">
-  <a href="https://cindy.cn"><img src=".github/assets/hero-zh.webp" width="100%" alt="CINDY —— 想到，就能做到。开源、开箱即用的 AI Agent，在你自己的电脑上替你把真实工作做完。"></a>
-</p>
+<!-- README_SYNC: source=0b0eae71; updated=2026-11-02 -->
 
 <p align="center">
   <a href="README.md">English</a> · <strong>简体中文</strong>
 </p>
 
+<h1 align="center">Cindy · Orca 协同试点 fork</h1>
+
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License" /></a>
-  <a href="https://github.com/makecindy/cindy/actions/workflows/ci.yml"><img src="https://github.com/makecindy/cindy/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/makecindy/cindy">Cindy</a> 的个人 fork，用来试验 Orca 多 Agent 协同：<br>
+  串行交付、阶段间重启后的对账，以及独立 Reviewer 复核。<strong>不是官方发行版。</strong>
 </p>
 
 <p align="center">
-  <strong><a href="https://cindy.cn/download">下载中国大陆版</a></strong> &nbsp;·&nbsp; <strong><a href="https://cindy.app/download">下载国际版</a></strong> &nbsp;·&nbsp; <a href="CONTRIBUTING.md">一起共创</a> &nbsp;·&nbsp; <a href="SUPPORT.md">使用帮助</a>
+  想用 Cindy 本身，请到<a href="https://github.com/makecindy/cindy">上游仓库</a>下载；觉得有用，就给上游点个
+  <a href="https://github.com/makecindy/cindy/stargazers"><strong>Star</strong></a>，方便回来找，也让更多人发现它。<br>
+  想跟进这里的试点，看本 fork 的 <a href="https://github.com/Shaojie66/cindy/pulls">Pull requests</a>。
 </p>
 
 <p align="center">
-  <a href="https://cindy.cn">中国大陆官网</a> &nbsp;·&nbsp; <a href="https://cindy.app">国际版官网</a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="许可证：Apache-2.0" /></a>
+  <a href="https://github.com/makecindy/cindy"><img src="https://img.shields.io/badge/fork%20of-makecindy%2Fcindy-555.svg" alt="上游：makecindy/cindy" /></a>
+  <a href="https://github.com/makecindy/cindy/stargazers"><img src="https://img.shields.io/github/stars/makecindy/cindy?label=upstream%20stars" alt="上游 Star 数" /></a>
+  <a href="https://github.com/Shaojie66/cindy/commits/main"><img src="https://img.shields.io/github/last-commit/Shaojie66/cindy" alt="本 fork 最近一次提交" /></a>
 </p>
 
-<p align="center">
-  <a href=".github/assets/star-history/trending-2026-10-26.png">★ GitHub Trending #1 · 2026.10.26</a>
-</p>
+## 这个 fork 加了什么
 
-Cindy 是一个**开源、开箱即用的 AI Agent**。连接你的多台电脑与手机，把熟悉的
-Agent、模型和已有订阅放在一起，培养一个懂你工作方式的伙伴。
+截至 2026-11-02，本 fork 的 `main` 等于上游 `main` 的提交 `db723ff7` 加一个文档提交。
+**产品代码没有任何改动。**
 
-## 所有设备，同一个 Cindy。
+| 改动 | 状态 | 位置 |
+| --- | --- | --- |
+| 首个串行协同试点：计划、证据合同、重启对账规则与首次运行记录 | 已合并（[#1](https://github.com/Shaojie66/cindy/pull/1)） | [`docs/dev-rules/orchestration-pilot.md`](docs/dev-rules/orchestration-pilot.md)，并在 [`AGENTS.md`](AGENTS.md) 加了索引 |
+| 启动时对账"丢失运行进程"的本机 Orca Worker | 评审中，**未合并**（[#2](https://github.com/Shaojie66/cindy/pull/2)） | Desktop 主进程、对应测试，以及 Orca 架构与试点文档 |
 
-办公室的电脑、家里的主机、随身笔记本和手机，连在一起用。
+## 试点做了什么，结果如何
 
-- **换屏幕，不换任务。** 在另一台设备打开同一个任务，继续对话、访问文件，不用重新搬运资料。
-- **不只共享画面，也共享模型。** 其他电脑上配置好的订阅、API 供应商和本地模型，开启远程访问后也能调用。
-- **手机，也是电脑的遥控器。** 内置远程桌面，需要时直接打开应用、输入和操作自己的电脑。
+试点用现有的 Orca 做一次有人监督的串行交付。Claude 担任 Lead，一个 Orca Worker 负责写作。
+独立 Reviewer 由 Lead 所在的任务显式触发现有的 `/review`：只读，不继承开发记忆。
 
-**你的电脑，变身免费的服务器，全球畅联。** 不用另租服务器，也不必自己搭服务。
+每个阶段的执行身份、文件 hash、终态和裁决都记进台账。状态依次是
+`pending → dispatched → produced → accepted`，另有 `rejected` 和 `blocked`。
+Worker 报告 done 最多算 `produced`，不等于验收通过。首轮不改产品代码，不加 schema 或 migration。
 
-<details>
-<summary>连接与数据如何处理</summary>
+首次运行的结果：
 
-远程访问自己的电脑，需要电脑在线、设备登录同一账号，并开启相应权限。
-模型共享需要允许对应供应商被远程调用，远程桌面也有独立的授权与系统权限。
-项目文件仍在原电脑上，可远程访问不等于整盘自动同步。云伙伴的对话、记忆、
-自有 Skill 和共享附件会通过 Cindy 服务同步；模型供应商会处理发送给它的请求。
-模型和服务费用仍按相应规则计费。
+- **跑通了**：串行流程、阶段间重启后的对账、中断后的人工对账，都按证据合同完成；Worker 的 done 没有被当成验收。
+- **没跑通**：写作的 Worker 原计划用 GPT-6.1 Terra，因为原生 OpenAI 订阅没有连上，改用本地的 Pi + Ollama `qwen3:8b`。
+  它在约 23k 的可用对话窗口下，没能按修订清单写完。两轮写作、两次 Review 之后第二稿仍被拒，最终交付记为 `rejected`。
+- **发现的缺口**：应用进程和 Worker 的运行进程一起退出后再启动，Worker 在数据库里仍是 `running`。
+  没有自动对账，Lead 也没被唤醒，只能靠人发现。[#2](https://github.com/Shaojie66/cindy/pull/2) 就是为这个缺口做的。
+- **方法上的限制**：负对照和正文一起附给 Reviewer、两份只差一行时，比对附件就能找到插入的错句，
+  证明不了 Reviewer 能在全文里独立发现问题。
 
-</details>
+完整计划、证据合同和运行记录见 [`orchestration-pilot.md`](docs/dev-rules/orchestration-pilot.md)；
+Orca 本身的架构见 [`orca-team-architecture.md`](docs/dev-rules/orca-team-architecture.md)。
 
-## 熟悉的 Agent，更顺手的体验。
+## 与上游的关系
 
-已经在用 Claude Code 或 Codex？Cindy 把它们和 **Pi** 放在一起，再加入对交互、
-多设备访问、工具协作的理解。
+- **上游**：[makecindy/cindy](https://github.com/makecindy/cindy) 是 Cindy 客户端的源码仓库，完整介绍见[上游 README](https://github.com/makecindy/cindy#readme)。
+- **基线**：本 fork 的 `main` 基于上游 `main` 的 `db723ff7`。
+- **发行**：本 fork 不提供安装包，也不发布版本。
+- **反馈**：本 fork 没有开启 Issues。Cindy 的使用问题和 Bug 请到[上游 Issues](https://github.com/makecindy/cindy/issues)，
+  先看 [SUPPORT.md](SUPPORT.md)（English：[SUPPORT.en.md](SUPPORT.en.md)）；对试点的建议，欢迎直接提 PR。
 
-| Harness | 带来的能力 |
-| --- | --- |
-| **Claude Code** | 熟悉的 Claude Code 工作方式，接上 Cindy 的界面与工具。 |
-| **Codex** | Codex 的代码工作流，与其他 Agent 在同一个产品里配合。 |
-| **Pi** | 轻量、开源、可扩展，原生支持多种模型供应商。 |
+## Cindy 是什么
 
-在支持的组合中选择 Harness 和模型，随任务需要切换。任务仍留在 Cindy，
-跨 Harness 时会交接或重建引擎上下文，并非把不同引擎的内部状态原样搬过去。
+按上游的介绍，Cindy 是一个开源、开箱即用的 AI Agent。它连接你的多台电脑和手机，用你已有的模型与订阅；
+支持 Claude Code、Codex 和 Pi 三种 Harness，也能让多个 Agent 分工协同。
 
-**一个不够？让她带队。** 把规划、并行执行和独立 Review 交给不同 Agent，
-围绕同一个目标和验收标准一起开工。
+客户端免费；模型调用仍按各供应商的限额和计费规则执行。支持 **macOS · Windows · Linux · iOS · Android**。
 
-## 在真实工具里，把工作做完。
-
-使用你的文件、浏览器和软件，从交办到检查结果，都在工作的现场。
-回答也不只有文字：**图表、交互控件和丰富的 HTML 内容**，都能出现在对话里。
-
-把重复的事情设成**自动化**，或者从接入的 Slack、飞书等聊天渠道交办。
-通过 **Skill、插件和 MCP**，继续连接自己的工具与工作方法。
-
-## 一开始就好用，任你打扮，任你培养。
-
-- **培养自己的伙伴。** 给她角色、指令、Skill 和日常工作：代码审阅、资料研究、项目跟进，都可以有专门的搭档。
-- **让经验留下来。** 把偏好和知识留在记忆中，把有效的方法写成可复用、可分享的 Skill。
-- **把能力接进来。** 从 SkillHub 发现 Skill 和插件，连接自己的工具，也可以从[官方插件](https://github.com/makecindy/cindy-official-plugins)开始开发。
-- **一起打磨 Cindy。** 审计、fork、改进交互、修复问题，或者贡献一个有用的集成。客户端以 Apache-2.0 开源。
-
-开源，不只是看得见，更是改得动。[一起打造 Cindy →](CONTRIBUTING.md)
-
-## 用你已经有的，开始就好。
-
-**客户端免费。** 授权已有的 Claude Code、Codex 等受支持订阅，接自己的 API key，
-或者使用本地模型；也可以选择 Cindy 官方模型服务。已有订阅仍按供应商的限额和
-规则使用，软件免费不等于模型调用无限量。
-
-**macOS · Windows · Linux · iOS · Android**
-
-[下载中国大陆版](https://cindy.cn/download) · [下载国际版](https://cindy.app/download)
-· [中国大陆定价](https://cindy.cn/pricing) · [国际版定价](https://cindy.app/pricing)
+下载：[国际版](https://cindy.app/download) · [中国大陆版](https://cindy.cn/download)　官网：[国际版](https://cindy.app) · [中国大陆版](https://cindy.cn)
 
 Linux 用户可参考 [Ubuntu、Arch Linux 与 Omarchy 安装指南](docs/linux.md)。
-
-<h3 align="center">好吧，是有一点受欢迎。</h3>
-
-<p align="center">
-  <a href="https://github.com/makecindy/cindy/stargazers">
-    <picture>
-      <source media="(prefers-color-scheme: dark) and (max-width: 600px)" srcset="https://raw.githubusercontent.com/makecindy/cindy/readme-star-history/stars-dark-mobile.svg">
-      <source media="(max-width: 600px)" srcset="https://raw.githubusercontent.com/makecindy/cindy/readme-star-history/stars-light-mobile.svg">
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/makecindy/cindy/readme-star-history/stars-dark.svg">
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/makecindy/cindy/readme-star-history/stars-light.svg">
-      <img src=".github/assets/star-history/stars-light.svg" width="100%" alt="Cindy 的 GitHub Star 趋势">
-    </picture>
-  </a>
-</p>
-<p align="center"><sub>每一颗星，都有好好记着。</sub></p>
 
 ---
 
 ## 给开发者
 
-本仓库包含 Cindy 的开源**桌面端、手机端及其共享 packages**，以 pnpm monorepo 组织。
-
-### 本仓包含什么
+本仓库包含 Cindy 的开源**桌面端、手机端及其共享 packages**，以 pnpm monorepo 组织。服务端在独立仓库，不在这里。
 
 | 路径 | 说明 |
 | --- | --- |
 | `apps/desktop` | Electron 桌面客户端 |
 | `apps/mobile` | Expo / React Native 手机客户端 |
-| `packages/*` | 客户端共享能力（鉴权、device-link、agent 编排、模型供应商等） |
+| `packages/*` | 客户端共享能力（鉴权、device-link、Agent 编排、模型供应商等） |
 | `apps/*-bin` | 桌面端附带的工具二进制，均不入库；claude-code / codex / ripgrep 由 `pnpm install` 按平台自动下载，Android platform-tools 在 Windows 打包前按 pin 版本下载并校验 sha256 |
-
-**服务端不在本仓库：** 服务端位于独立仓库，不属于本 monorepo。
-
-| 使用方式 | 账号要求 | 可用范围 |
-| --- | --- | --- |
-| 远程托管 | Cindy 云端账号 | 使用 Cindy 的完整托管服务；[中国大陆定价](https://cindy.cn/pricing) · [国际版定价](https://cindy.app/pricing)。 |
-| 跳过登录 | 无需登录 Cindy 账号 | 在登录页选择「跳过登录」即可使用本机 agent 功能，应用内显示为「未登录」。依赖服务端的能力在该状态下不可用。 |
 
 ### 前置要求
 
@@ -137,69 +94,75 @@ Linux 用户可参考 [Ubuntu、Arch Linux 与 Omarchy 安装指南](docs/linux.
 - **pnpm** 10.x（暂不支持 v11）
 - **Git LFS**
 
-### 开始开发
-
-开发者安装、Git LFS、依赖更新和权限说明统一见
-[`CONTRIBUTING.md`](CONTRIBUTING.md)。插件通过 SkillHub 或手动安装。
-
-最短入口：
+### 快速开始
 
 ```bash
-git clone https://github.com/makecindy/cindy.git
+git clone https://github.com/Shaojie66/cindy.git
 cd cindy
 git lfs pull
 pnpm install
 ```
 
-### 开发入口
+要拉取上游的新提交，再加一个上游 remote：
 
 ```bash
-# 中国大陆版 Cindy 账号
-pnpm restart:desktop:remote --region=cn
+git remote add upstream https://github.com/makecindy/cindy.git
+```
 
-# 国际版 Cindy 账号
+依赖更新、权限和新 worktree 的准备见 [`CONTRIBUTING.md`](CONTRIBUTING.md)（English：[`CONTRIBUTING.en.md`](CONTRIBUTING.en.md)）
+和[环境安装](docs/dev-rules/environment-setup.md)。
+
+### 启动桌面端开发版
+
+用中国大陆版 Cindy 账号：
+
+```bash
+pnpm restart:desktop:remote --region=cn
+```
+
+用国际版 Cindy 账号：
+
+```bash
 pnpm restart:desktop:remote --region=global
 ```
 
-Remote 开发会使用你自己的 Cindy 云端账号和现有登录态，因此可以继续已有的会话与工作。
-中国大陆账号必须使用 `cn`，国际版账号必须使用 `global`，不要依赖内部默认值。完整的
-桌面端、手机端、数据隔离和验证流程见 [`CONTRIBUTING.md`](CONTRIBUTING.md)。
+Remote 开发使用你自己的 Cindy 云端账号和现有登录态，可以继续已有的任务。区域必须显式指定，不要依赖内部默认值。
 
-登录页的「跳过登录」不是连接本地服务端，而是无需登录 Cindy 账号即可使用本机
-agent；进入后应用内的账号状态显示为「未登录」。依赖服务端的能力在该状态下不可用。
+登录页的「跳过登录」不连接本地服务端：它让你不登录 Cindy 账号也能使用本机 Agent，应用内显示为「未登录」，
+依赖服务端的能力在这个状态下不可用。
 
-**关于默认服务器：** 客户端默认连接 Cindy 官方云服务（端点清单见
-[`config/endpoint.json`](config/endpoint.json) 与
-[`config/endpoint.global.json`](config/endpoint.global.json)，桌面端自动更新
-同样来自官方 CDN）。这是有意的设计——外部开发者不需要自建服务端，用 dev
-构建登录自己的 Cindy 账号即可直接对着官方服务器开发和测试。
+**关于默认服务器**：客户端默认连接 Cindy 官方云服务（端点清单见
+[`config/endpoint.json`](config/endpoint.json) 与 [`config/endpoint.global.json`](config/endpoint.global.json)），
+桌面端自动更新也来自官方 CDN。从本 fork 源码构建的客户端同样如此。
 
-### 架构
+### 架构与规则
 
 - [`DESIGN.md`](DESIGN.md) —— 视觉设计系统、颜色 token 与 UI 规范
 - [`docs/README.md`](docs/README.md) —— 完整文档与规则索引
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) —— 面向社区贡献者的环境、验证与提交流程
-- [`AGENTS.md`](AGENTS.md) —— 工程规范、启动 / 运行时契约、模块边界
-- [`docs/dev-rules/`](docs/dev-rules/) —— 架构深度文档（如 Orca 多 agent 协同）
+- [`docs/auth-realm-routing.md`](docs/auth-realm-routing.md) —— 组织 SSO 登录的区域发现与端点路由
+- [`AGENTS.md`](AGENTS.md) —— 工程规范、启动与运行时契约、模块边界
+- [`docs/dev-rules/orca-team-architecture.md`](docs/dev-rules/orca-team-architecture.md) —— Orca 多 Agent 协同架构
+- [`docs/dev-rules/orchestration-pilot.md`](docs/dev-rules/orchestration-pilot.md) —— 本 fork 的串行协同试点
+- [`docs/dev-rules/`](docs/dev-rules/) —— 其他架构深度文档
 
 ## 贡献
 
-改动通过 pull request 合入 `main`。请先阅读
-[`CONTRIBUTING.md`](CONTRIBUTING.md)，再按
-[`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md) 提交。
-每个 commit 需带 [DCO](DCO) 签名（`git commit -s`），由 PR 上的 DCO check 校验；
-不需要签 CLA。
-同时请遵守 [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)；普通使用问题见
-[`SUPPORT.md`](SUPPORT.md)，安全问题仍按 [`SECURITY.md`](SECURITY.md) 私下报告。
+本 fork 的改动同样通过 PR 合入 `main`，每个 commit 都要带 [DCO](DCO) 签名（`git commit -s`），不需要签 CLA。
+
+想给 Cindy 本身贡献代码，请向上游提 PR：先读 [`CONTRIBUTING.md`](CONTRIBUTING.md)（English：[`CONTRIBUTING.en.md`](CONTRIBUTING.en.md)），
+再按 [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md) 提交。
+同时请遵守 [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)（English：[`CODE_OF_CONDUCT.en.md`](CODE_OF_CONDUCT.en.md)）。
 
 ## 安全
 
-任何凭证 / 授权文件都不得提交进工作区。发现安全问题请按照
-[`SECURITY.md`](SECURITY.md) 的说明私下报告，不要开公开 issue。
+任何凭证或授权文件都不得提交进工作区。发现安全问题，请按 [`SECURITY.md`](SECURITY.md)
+（English：[`SECURITY.en.md`](SECURITY.en.md)）私下报告给上游维护者，不要开公开 issue。
 
 ## 隐私与遥测
 
-**官方分发的安装包**包含 [TapDB](https://www.taptap.cn/tapdb) 使用统计，用于
+本 fork 没有改动这部分代码，以下说明与上游一致（截至基线提交 `db723ff7`）。
+
+**官方分发的安装包**包含 TapDB（[taptap.cn](https://www.taptap.cn/tapdb) · [taptap.io](https://www.taptap.io/tapdb)）使用统计，用于
 产品层面的汇总分析，包括设备标识、系统 / 应用版本、启动与活跃事件；登录后会
 关联账号 ID，因此不应理解为完全匿名。TapDB **不采集**聊天内容、文件内容或
 工作目录数据。
@@ -242,6 +205,9 @@ agent；进入后应用内的账号状态显示为「未登录」。依赖服务
 
 ## 许可证 / License
 
+本 fork 沿用上游的 [`LICENSE`](LICENSE) 与 [`NOTICE`](NOTICE)，没有改动其中的版权和署名；
+除另有说明外，本 fork 新增的内容同样适用根目录 `LICENSE`。
+
 除非另有说明，本仓库的源代码依据 [Apache License 2.0](LICENSE) 授权。
 源文件不单独携带许可证头，统一以仓库根目录的 `LICENSE` 为准。
 
@@ -250,3 +216,10 @@ agent；进入后应用内的账号状态显示为「未登录」。依赖服务
 声明与 SPDX SBOM 统一收口在 [`docs/legal/`](docs/legal/)；各分发产物的精确清单
 见 [`docs/legal/notices/`](docs/legal/notices/)。本项目的版权与归属信息见
 [`NOTICE`](NOTICE)。
+
+---
+
+<p align="center">
+  试点对你有参考价值的话：给<a href="https://github.com/makecindy/cindy/stargazers">上游</a>点个 Star，
+  在 <a href="https://github.com/Shaojie66/cindy/pulls">Pull requests</a> 里跟进 #2，有改进建议也欢迎直接提 PR。
+</p>
