@@ -1827,6 +1827,28 @@ export class AgentInputCoordinator {
   }
 
   /**
+   * True only while every pending input waits for an explicit user release: the queue is
+   * paused (user Stop or crash-restore pause) and nothing is active, steering, recovering or
+   * compacting. A restored usage-limit retry head continues on its own, so it is not held.
+   * Startup reconciliation of a lost Orca Worker runtime relies on it
+   * (orca-team-architecture.md「Worker 运行态」#13).
+   */
+  isQueueHeldForUser(sessionId: string): boolean {
+    if (!this.isQueueRestored(sessionId)) return false;
+    const state = this.getState(sessionId);
+    if (
+      state.activeTurn !== null ||
+      state.steeringQueueClientIds.length > 0 ||
+      state.recovery !== null ||
+      state.pendingCompacts.length > 0
+    ) {
+      return false;
+    }
+    const gate = this.explainDrainBlockGate(sessionId, state);
+    return gate === 'queue-paused' || gate === 'queue-paused-by-restore';
+  }
+
+  /**
    * Rewind owns the whole active input boundary, including vendor turns and
    * unresolved interactions that can still resume the current turn.
    */

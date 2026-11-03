@@ -672,18 +672,18 @@ describe('orcaTeamStore', () => {
   });
 
   it.each([
-    ['idle active Lead', 'UPDATE sessions SET active_turn_started_at = 3000, last_turn_ended_at = 3500 WHERE id = ?', true],
-    ['Lead turn running in this process', 'UPDATE sessions SET active_turn_started_at = 12000, last_turn_ended_at = 3500 WHERE id = ?', true],
-    ['Lead itself interrupted before boot', 'UPDATE sessions SET active_turn_started_at = 7000, last_turn_ended_at = 3500 WHERE id = ?', false],
-    ['Lead task archived', "UPDATE sessions SET status = 'archived' WHERE id = ?", false],
+    ['idle active Lead', 'UPDATE sessions SET active_turn_started_at = 3000, last_turn_ended_at = 3500 WHERE id = ?', 'ready'],
+    ['Lead turn running in this process', 'UPDATE sessions SET active_turn_started_at = 12000, last_turn_ended_at = 3500 WHERE id = ?', 'ready'],
+    ['Lead itself interrupted before boot', 'UPDATE sessions SET active_turn_started_at = 7000, last_turn_ended_at = 3500 WHERE id = ?', 'interrupted'],
+    ['Lead task archived', "UPDATE sessions SET status = 'archived' WHERE id = ?", 'gone'],
   ] as const)('decides whether a lost Worker may wake its Lead: %s', async (_name, mutation, expected) => {
-    const { isLeadSessionReadyForWorkerNotice } = await import('../orcaTeamStore.js');
+    const { readLeadWorkerNoticeReadiness } = await import('../orcaTeamStore.js');
     const client = createTestDbClient();
     setCurrentDbClient(client, 'test-user');
     await seedOrcaWorkers(client);
     await client.exec(mutation, ['lead-session-1']);
 
-    await expect(isLeadSessionReadyForWorkerNotice('lead-session-1', LOST_BOOT_AT)).resolves.toBe(expected);
+    await expect(readLeadWorkerNoticeReadiness('lead-session-1', LOST_BOOT_AT)).resolves.toBe(expected);
   });
 
   it('isOrphanedTeamInit:零 worker 且无存活 reservation 判孤儿;活租约或任意 worker 行则不判 (#3555)', async () => {

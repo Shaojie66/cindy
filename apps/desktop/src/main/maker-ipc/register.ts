@@ -572,7 +572,6 @@ import {
   getSessionOrcaRole,
   getWorkerLink,
   isActiveWorkerStatus,
-  isLeadSessionReadyForWorkerNotice,
   isOrphanedTeamInit,
   listLostRuntimeWorkerCandidates,
   listWorkersByLead,
@@ -580,6 +579,7 @@ import {
   markWorkersStatusByTeam,
   markWorkerErrorIfRunningSince,
   markWorkerIdleIfStatus,
+  readLeadWorkerNoticeReadiness,
   readWorkerLostTurnInputOrigin,
   restoreWorkerDoneIfIdle,
   reconcileInactiveTeamWorkersForLead,
@@ -3195,7 +3195,12 @@ const orcaLostRuntimeReconciler = createOrcaLostRuntimeReconciler({
   getTeamService: () => orcaTeamServiceForEvents,
   listCandidates: listLostRuntimeWorkerCandidates,
   readTurnInputOrigin: readWorkerLostTurnInputOrigin,
-  isLeadReadyForNotice: isLeadSessionReadyForWorkerNotice,
+  readLeadReadiness: readLeadWorkerNoticeReadiness,
+  schedule: (delayMs, task) => {
+    const timer = setTimeout(task, delayMs);
+    return () => clearTimeout(timer);
+  },
+  now: () => Date.now(),
   log,
 });
 
@@ -16232,6 +16237,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     markWorkerErrorIfRunningSince: (cas) => markWorkerErrorIfRunningSince(cas),
     // Exact-owner turn leases: a live shared-userData peer's turn keeps the Worker running.
     isSessionTurnLeased: (sessionId) => sessionTurnLeaseTracker.isTurnActive(sessionId),
+    // A restart-paused queue only moves on the user's explicit release, never on its own.
+    hasRunnableWorkerInput: async (sessionId) =>
+      (await hasPendingIdleReleaseInput(sessionId)) && !inputCoordinator.isQueueHeldForUser(sessionId),
     updateWorkerIdentity,
     markWorkerIdle: async (workerId) => {
       const now = Date.now();

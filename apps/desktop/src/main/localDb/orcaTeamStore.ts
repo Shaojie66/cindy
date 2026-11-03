@@ -4,6 +4,7 @@ import { createId } from '@paralleldrive/cuid2';
 import { orcaWorkerSessionTitle } from '@cindy/maker-shared/orca-team';
 import type { OrcaRemotePendingReport } from '../../shared/orcaRemoteWorker.js';
 import { parseOrcaRemoteLead } from '../../shared/orcaRemoteWorker.js';
+import { isAutoResumeUserMessage } from '../../shared/interruptedTurn.js';
 
 import { getDbClient, getCurrentDbClientSnapshot, type CurrentDbClientSnapshot } from './client/current.js';
 import type { OrcaRemoteWorkerProxySessionSeed } from './client/tx/types.js';
@@ -736,13 +737,15 @@ export interface WorkerTurnInputOrigin {
   senderSessionId: string | null;
 }
 
-function readInputOrigin(agentMeta: string | null): WorkerTurnInputOrigin & { autoResume: boolean } {
-  let meta: unknown = null;
+function parseAgentMeta(agentMeta: string | null): unknown {
   try {
-    meta = agentMeta ? JSON.parse(agentMeta) : null;
+    return agentMeta ? JSON.parse(agentMeta) : null;
   } catch {
-    meta = null;
+    return null;
   }
+}
+
+function readInputOrigin(meta: unknown): WorkerTurnInputOrigin {
   const record = meta && typeof meta === 'object' && !Array.isArray(meta)
     ? (meta as Record<string, unknown>)
     : {};
@@ -750,7 +753,6 @@ function readInputOrigin(agentMeta: string | null): WorkerTurnInputOrigin & { au
     ? (record.origin as Record<string, unknown>)
     : {};
   return {
-    autoResume: record.autoResume === true,
     kind: typeof origin.kind === 'string' ? origin.kind : null,
     senderSessionId: typeof origin.senderSessionId === 'string' ? origin.senderSessionId : null,
   };
@@ -782,21 +784,24 @@ export async function readWorkerLostTurnInputOrigin(
     .orderBy(desc(messages.createdAt), desc(sql`${messages}.rowid`))
     .limit(LOST_TURN_INPUT_SCAN_LIMIT);
   for (const row of rows) {
-    const origin = readInputOrigin(row.agentMeta);
-    if (origin.autoResume) continue;
-    return { kind: origin.kind, senderSessionId: origin.senderSessionId };
+    const meta = parseAgentMeta(row.agentMeta);
+    if (isAutoResumeUserMessage(meta)) continue;
+    return readInputOrigin(meta);
   }
   return null;
 }
 
 /**
- * A Lead may be woken only while it is active and not itself waiting on the user's
- * continue/ignore choice for a turn that began before this process booted.
+ * `ready`: the Lead may be woken. `interrupted`: it still waits on the user's continue/ignore
+ * choice for a turn that began before this process booted, so a notice waits too. `gone`:
+ * the Lead session is missing or no longer active.
  */
-export async function isLeadSessionReadyForWorkerNotice(
+export type LeadWorkerNoticeReadiness = 'ready' | 'interrupted' | 'gone';
+
+export async function readLeadWorkerNoticeReadiness(
   leadSessionId: string,
   bootAt: number,
-): Promise<boolean> {
+): Promise<LeadWorkerNoticeReadiness> {
   const [row] = await getDbClient()
     .drizzle.select({
       status: sessions.status,
@@ -807,13 +812,13 @@ export async function isLeadSessionReadyForWorkerNotice(
     .from(sessions)
     .where(eq(sessions.id, leadSessionId))
     .limit(1);
-  if (!row || row.status !== 'active') return false;
+  if (!row || row.status !== 'active') return 'gone';
   const interrupted =
     row.startedAt !== null &&
     row.startedAt < bootAt &&
     row.startedAt > (row.endedAt ?? 0) &&
     row.startedAt > (row.clearedAt ?? 0);
-  return !interrupted;
+  return interrupted ? 'interrupted' : 'ready';
 }
 
 /** Restores a raced done acknowledgement only while the worker is still idle. */

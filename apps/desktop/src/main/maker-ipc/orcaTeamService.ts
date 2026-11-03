@@ -2,6 +2,7 @@ import type { AgentKind } from '@cindy/maker-core';
 import { normalizeOrcaWorkerLabel, normalizeOrcaWorkerRole } from '@cindy/maker-shared/orca-team';
 
 import type { AgentInputQueuedMessage } from '../../shared/agentInputQueue.js';
+import type { LostWorkerErrorCas } from '../localDb/orcaTeamStore.js';
 import { createHostSendFailure } from '../maker-host/send-outcome.js';
 import type {
   CollabDispatchFailureOutcome,
@@ -379,14 +380,14 @@ export interface OrcaTeamServiceDeps {
    * Startup reconciliation: CAS a Worker the previous process left running to error, only while
    * the observed turn is still the open one and no turn lease exists.
    */
-  markWorkerErrorIfRunningSince?(cas: {
-    workerId: string;
-    sessionId: string;
-    observedUpdatedAt: number;
-    turnStartedAt: number;
-  }): Promise<boolean>;
+  markWorkerErrorIfRunningSince(cas: LostWorkerErrorCas): Promise<boolean>;
   /** True while this process or a live shared-userData peer holds the session's turn lease. */
-  isSessionTurnLeased?(sessionId: string): Promise<boolean>;
+  isSessionTurnLeased(sessionId: string): Promise<boolean>;
+  /**
+   * Like hasPendingWorkerInput, but input held in a paused queue until the user releases it
+   * does not count: it can never start a turn on its own (Worker 运行态 #13).
+   */
+  hasRunnableWorkerInput(sessionId: string): Promise<boolean>;
   markWorkerIdle(workerId: string): Promise<void>;
   markWorkerIdleIfStatus(workerId: string, expectedStatus: 'done'): Promise<boolean>;
   restoreWorkerDoneIfIdle(workerId: string): Promise<boolean>;
@@ -566,27 +567,28 @@ export interface OrcaTeamService {
   handleWorkerTerminalTurn(params: WorkerTerminalTurnParams): Promise<void>;
   /** Settles a local Worker whose runtime died with the previous Main process (Worker 运行态 #13). */
   reconcileLostLocalWorker(params: LostLocalWorkerParams): Promise<LostLocalWorkerResult>;
+  /** Delivers the fixed lost-runtime notice; true only when the Lead accepted it. */
+  deliverLostWorkerNotice(notice: LostWorkerNotice): Promise<boolean>;
 }
 
-export interface LostLocalWorkerParams {
-  workerId: string;
-  sessionId: string;
+export interface LostLocalWorkerParams extends LostWorkerErrorCas {
   leadSessionId: string;
-  /** `orca_workers.updated_at` read by the durable candidate query. */
-  observedUpdatedAt: number;
-  /** Start of the turn that never ended; quoted in the Lead notice. */
-  turnStartedAt: number;
-  /** Only a turn the Lead assigned owes the Lead a notice. */
-  notifyLead: boolean;
   /**
    * Rejects once the DB owner the candidate was read from is no longer current. Checked after
-   * the locks are held (before the CAS) and again before broadcast and notice.
+   * the locks are held (before the CAS) and again before the broadcast.
    */
   assertCurrent: () => Promise<void>;
 }
 
+export interface LostWorkerNotice {
+  leadSessionId: string;
+  workerId: string;
+  /** Start of the turn that never ended; quoted in the notice. */
+  turnStartedAt: number;
+}
+
 /** `marked`: now error; `runtime-active`: something may still own it; `changed`: the row moved on. */
-export type LostLocalWorkerResult = 'marked' | 'runtime-active' | 'changed' | 'unsupported';
+export type LostLocalWorkerResult = 'marked' | 'runtime-active' | 'changed';
 
 const AUTO_BRIDGE_ERROR_HEADER = '[Auto-bridged: worker 异常终止]';
 
@@ -598,6 +600,7 @@ export function formatLostWorkerRuntimeNotice(turnStartedAt: number): string {
     'Worker 的运行进程在上一次 Cindy 退出时丢失，系统没有收到这一轮的结束结果，已把 Worker 标为 error。',
     `- 这一轮开始于 ${new Date(turnStartedAt).toISOString()}，结果未知：可能已有部分或全部产出。`,
     '- 系统没有重发派单，也没有自动续跑；Worker 任务里仍保留「继续 / 忽略」中断提示，用户可能会手动继续。',
+    '- Worker 在 Cindy 退出前排队的消息（如有）现在处于暂停状态，不会自动发送，要等用户在 Worker 任务里放行。',
     '- 重新派单前，先读 Worker 的消息记录、产物和排队消息，再决定接受、补发续执行消息或重派。',
   ].join('\n');
 }
@@ -2368,9 +2371,6 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
       }
     },
     async reconcileLostLocalWorker(params) {
-      const markError = deps.markWorkerErrorIfRunningSince;
-      const isLeased = deps.isSessionTurnLeased;
-      if (!markError || !isLeased) return 'unsupported';
       const { workerId, sessionId } = params;
       // Turn start and terminal writes share this transition. handleWorkerTurnStarted does not
       // write an already-running row, so the CAS alone cannot see a new turn; holding the
@@ -2388,13 +2388,14 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
         if (deps.hasSendToSessionLock(sessionId)) return 'runtime-active';
         return deps.withSessionSendLock(sessionId, async () => {
           if (deps.getLiveSession(sessionId)?.isTurnRunning()) return 'runtime-active';
-          if (await deps.hasPendingWorkerInput(sessionId)) return 'runtime-active';
+          // A restart-paused queue waits for the user, never for a runtime; it does not count.
+          if (await deps.hasRunnableWorkerInput(sessionId)) return 'runtime-active';
           // Fail closed: a lease whose owner may still be alive counts as a running turn.
-          if (await isLeased(sessionId)) return 'runtime-active';
+          if (await deps.isSessionTurnLeased(sessionId)) return 'runtime-active';
           // The waits above can span an account switch; never write the old owner's row into
           // the new database (orca-team-architecture.md「Worker 运行态」#13).
           await params.assertCurrent();
-          const marked = await markError({
+          const marked = await deps.markWorkerErrorIfRunningSince({
             workerId,
             sessionId,
             observedUpdatedAt: params.observedUpdatedAt,
@@ -2407,7 +2408,7 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
       try {
         await params.assertCurrent();
       } catch (err) {
-        // The old owner's row is already error; only its broadcast and notice are dropped.
+        // The old owner's row is already error; only its broadcast is dropped.
         deps.log.warn('orca lost worker runtime reconciled across an account switch', {
           workerId,
           sessionId,
@@ -2421,28 +2422,26 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
         sessionId,
         leadSessionId: params.leadSessionId,
         turnStartedAt: params.turnStartedAt,
-        notifyLead: params.notifyLead,
       });
-      if (!params.notifyLead) return result;
-      // Only the CAS winner reaches here, so each running→error transition notifies once.
-      // Delivery stays outside every lock: Lead acceptance may dispatch to this Worker again.
+      return result;
+    },
+    async deliverLostWorkerNotice(notice) {
+      // Callers hold no lock here: Lead acceptance may dispatch to this Worker again.
       try {
         const { accepted } = await deps.sendAutoBridgeToLead(
-          params.leadSessionId,
-          formatLostWorkerRuntimeNotice(params.turnStartedAt),
-          workerId,
+          notice.leadSessionId,
+          formatLostWorkerRuntimeNotice(notice.turnStartedAt),
+          notice.workerId,
         );
-        if (!accepted) {
-          deps.log.warn('orca lost worker runtime notice was not accepted', { workerId, sessionId });
-        }
+        return accepted;
       } catch (err) {
         deps.log.warn('orca lost worker runtime notice failed', {
-          workerId,
-          sessionId,
+          workerId: notice.workerId,
+          leadSessionId: notice.leadSessionId,
           err: err instanceof Error ? err.message : String(err),
         });
+        return false;
       }
-      return result;
     },
   };
 }

@@ -420,6 +420,9 @@ function createDeps(overrides: Partial<OrcaTeamServiceDeps> = {}) {
       return true;
     }),
     hasPendingWorkerInput: vi.fn(async () => false),
+    hasRunnableWorkerInput: vi.fn(async () => false),
+    markWorkerErrorIfRunningSince: vi.fn(async () => false),
+    isSessionTurnLeased: vi.fn(async () => false),
     hasSendToSessionLock: vi.fn(() => false),
     withSessionSendLock: async (_id, operation) => operation(),
     archiveWorkerSession: vi.fn(async (sessionId) => {
@@ -4092,15 +4095,11 @@ describe('OrcaTeamService.reconcileLostLocalWorker', () => {
     leadSessionId: 'lead-1',
     observedUpdatedAt: 5_000,
     turnStartedAt,
-    notifyLead: true,
     assertCurrent: async () => {},
     ...overrides,
   });
   function createLostDeps(overrides: Partial<OrcaTeamServiceDeps> = {}) {
-    const harness = createDeps({
-      isSessionTurnLeased: vi.fn(async () => false),
-      ...overrides,
-    });
+    const harness = createDeps(overrides);
     harness.setWorker(createWorker({ status: 'running' }));
     if (!overrides.markWorkerErrorIfRunningSince) {
       harness.deps.markWorkerErrorIfRunningSince = vi.fn(async ({ workerId }) => {
@@ -4115,7 +4114,7 @@ describe('OrcaTeamService.reconcileLostLocalWorker', () => {
 
   it.each([
     ['this process runs a live turn', { getLiveSession: vi.fn(() => ({ isTurnRunning: () => true })) }],
-    ['input or recovery is pending', { hasPendingWorkerInput: vi.fn(async () => true) }],
+    ['input or recovery may still run on its own', { hasRunnableWorkerInput: vi.fn(async () => true) }],
     ['a send holds the session lock', { hasSendToSessionLock: vi.fn(() => true) }],
     ['a live owner holds the turn lease', { isSessionTurnLeased: vi.fn(async () => true) }],
   ] as const)('leaves the Worker running when %s', async (_name, overrides) => {
@@ -4137,8 +4136,10 @@ describe('OrcaTeamService.reconcileLostLocalWorker', () => {
     expect(deps.sendAutoBridgeToLead).not.toHaveBeenCalled();
   });
 
-  it('marks the Worker error and sends the Lead exactly one fixed notice', async () => {
-    const { deps, service, getWorker } = createLostDeps();
+  it('marks the Worker error once, even with a restart-paused Lead follow-up still queued', async () => {
+    // Review of PR #2: a follow-up queued before the crash is restored paused and never runs
+    // on its own. Counting it as in flight left the Worker running with no Lead notice.
+    const { deps, service, getWorker } = createLostDeps({ hasPendingWorkerInput: vi.fn(async () => true) });
 
     await expect(service.reconcileLostLocalWorker(lostParams())).resolves.toBe('marked');
     expect(getWorker().status).toBe('error');
@@ -4147,16 +4148,27 @@ describe('OrcaTeamService.reconcileLostLocalWorker', () => {
       workerId: 'worker-1', sessionId: 'worker-session-1', observedUpdatedAt: 5_000, turnStartedAt,
     });
     expect(deps.broadcastOrcaWorkerChanged).toHaveBeenCalledWith('lead-1');
-    expect(deps.sendAutoBridgeToLead).toHaveBeenCalledTimes(1);
+    // The reconciler owns the notice (and its retries); the service never sends it here.
+    expect(deps.sendAutoBridgeToLead).not.toHaveBeenCalled();
+
+    // A repeated pass no longer wins the CAS, so it cannot register a second notice.
+    await expect(service.reconcileLostLocalWorker(lostParams())).resolves.toBe('changed');
+  });
+
+  it.each([
+    ['accepted', async () => ({ accepted: true }), true],
+    ['rejected', async () => ({ accepted: false }), false],
+    ['thrown', async () => { throw new Error('dispatch not initialized'); }, false],
+  ] as const)('reports whether the Lead %s the fixed lost-runtime notice', async (_name, send, accepted) => {
+    const { deps, service } = createLostDeps({ sendAutoBridgeToLead: vi.fn(send) });
+
+    await expect(service.deliverLostWorkerNotice({ leadSessionId: 'lead-1', workerId: 'worker-1', turnStartedAt }))
+      .resolves.toBe(accepted);
     const [leadSessionId, notice, workerId] = vi.mocked(deps.sendAutoBridgeToLead).mock.calls[0]!;
     expect([leadSessionId, workerId]).toEqual(['lead-1', 'worker-1']);
     // The Lead prompt treats "[Auto-bridged: ...]" as a Worker report; the start time lets it locate the turn.
     expect(notice.startsWith('[Auto-bridged: worker 异常终止]\n')).toBe(true);
     expect(notice).toContain('2026-11-02T14:53:13.000Z');
-
-    // A repeated pass no longer wins the CAS, so the Lead is not notified twice.
-    await expect(service.reconcileLostLocalWorker(lostParams())).resolves.toBe('changed');
-    expect(deps.sendAutoBridgeToLead).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -4180,14 +4192,6 @@ describe('OrcaTeamService.reconcileLostLocalWorker', () => {
     }
     expect(getWorker().status).toBe(status);
     expect(deps.broadcastOrcaWorkerChanged).not.toHaveBeenCalled();
-    expect(deps.sendAutoBridgeToLead).not.toHaveBeenCalled();
-  });
-
-  it('marks a Worker whose lost turn the Lead did not assign without waking the Lead', async () => {
-    const { deps, service, getWorker } = createLostDeps();
-
-    await expect(service.reconcileLostLocalWorker(lostParams({ notifyLead: false }))).resolves.toBe('marked');
-    expect(getWorker().status).toBe('error');
     expect(deps.sendAutoBridgeToLead).not.toHaveBeenCalled();
   });
 
@@ -4219,13 +4223,6 @@ describe('OrcaTeamService.reconcileLostLocalWorker', () => {
 
     expect(calls.filter((call) => call === 'markWorkerError' || call.startsWith('updateWorkerStatus')))
       .toEqual(['markWorkerError', 'updateWorkerStatus:running']);
-    expect(getWorker().status).toBe('running');
-  });
-
-  it('is unsupported without the reconciliation dependencies', async () => {
-    const { service, getWorker } = createLostDeps({ isSessionTurnLeased: undefined });
-
-    await expect(service.reconcileLostLocalWorker(lostParams())).resolves.toBe('unsupported');
     expect(getWorker().status).toBe('running');
   });
 });

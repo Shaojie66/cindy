@@ -31,6 +31,24 @@ export {
 } from '@cindy/maker-shared/synthetic-trigger';
 
 /**
+ * 这条即将落库的 user 消息是不是**自动补发**的续跑指令。
+ *
+ * 唯一判据是 `agentMeta.autoResume`（coordinator → makerSendTransaction 一路透传，
+ * 见 AgentInputQueuedMessage.autoResume）。**刻意不看正文**：续跑指令的文本是共享
+ * 常量，用户完全可以手动发一条一模一样的内容，按文本判会把人类动作误判成自动动作。
+ *
+ * 用途是在「人工介入 → 重置连续失败计数」时排除自动补发的那条消息：不排除就等于
+ * 自己给自己重置，连续 N 次失败后停下等人这条保证会失效。抽成纯函数是为了让这个
+ * 判据只有一份、且能被单测锁住——它长在 register 的巨型 wiring 里时既测不到也容易
+ * 被改坏。Orca 启动对账（orca-team-architecture.md「Worker 运行态」#13）读丢失轮次的
+ * 派单来源时也用它跳过隐藏续跑行，所以放在不依赖 maker-core 的共享模块里。
+ */
+export function isAutoResumeUserMessage(agentMeta: unknown): boolean {
+  if (!agentMeta || typeof agentMeta !== 'object') return false;
+  return (agentMeta as { autoResume?: unknown }).autoResume === true;
+}
+
+/**
  * error-tail-banner:把 role='error' 行的原始 content(DB 存的 JSON 字符串)
  * merge 上 dismissed:true,返回可直接回写的对象。纯函数(规则 14,单测覆盖):
  *  - 合法 JSON 对象 → 原字段全保留(message / reason / sdkError / ...)+ dismissed;

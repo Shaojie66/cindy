@@ -1115,6 +1115,9 @@ describe('AgentInputCoordinator Orca priority queue transactions', () => {
       closeWorkerSession: async () => {},
       closeWorkerSessionIfIdle: async () => true,
       hasPendingWorkerInput: async () => false,
+      hasRunnableWorkerInput: async () => false,
+      markWorkerErrorIfRunningSince: async () => false,
+      isSessionTurnLeased: async () => false,
       hasSendToSessionLock: () => false,
       withSessionSendLock: async (_sessionId, action) => action(),
       archiveWorkerSession: async () => {},
@@ -11318,11 +11321,14 @@ describe('AgentInputCoordinator crash-recovery queue snapshots (issue #761)', ()
     expect(projection.queuePaused).toBe(true);
     // 重启后不自动替用户发送。
     expect(h.sendToAgent).not.toHaveBeenCalled();
+    // Lost-Worker reconciliation (orca #13) may mark it: only the user can release this queue.
+    expect(h.coordinator.isQueueHeldForUser(sid)).toBe(true);
 
     h.coordinator.resume(sid);
     await flush();
     expect(h.sendToAgent).toHaveBeenCalledTimes(1);
     expect(h.sendToAgent.mock.calls[0]?.[1]).toEqual({ type: 'user', content: 'first' });
+    expect(h.coordinator.isQueueHeldForUser(sid)).toBe(false);
   });
 
   it('releases a crash-restored paused queue on explicit user input (resumeRestorePausedQueue)', async () => {
@@ -14717,6 +14723,8 @@ describe('usage-limit wait (ordinary tasks)', () => {
     });
     await h.coordinator.ensureQueueRestored(sid);
     expect(h.coordinator.getProjection(sid).queuePaused).toBe(true);
+    // Paused, yet the quota input continues on its own: not held for the user (orca #13).
+    expect(h.coordinator.isQueueHeldForUser(sid)).toBe(false);
     expect(h.coordinator.armUsageLimitWait(sid, token, 9_000_000)).toBe(true);
     expect(await h.coordinator.continueAfterUsageLimitReset(sid, token, INFO)).toBe('resumed');
     await flush();
