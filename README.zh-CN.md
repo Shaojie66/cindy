@@ -1,4 +1,4 @@
-<!-- README_SYNC: source=0b0eae71; updated=2026-11-02 -->
+<!-- README_SYNC: source=c435e784; updated=2026-11-03 -->
 
 <p align="center">
   <a href="README.md">English</a> · <strong>简体中文</strong>
@@ -26,13 +26,13 @@
 
 ## 这个 fork 加了什么
 
-截至 2026-11-02，本 fork 的 `main` 等于上游 `main` 的提交 `db723ff7` 加一个文档提交。
-**产品代码没有任何改动。**
+截至 2026-11-03，本 fork 的 `main` 在上游 `main` 的提交 `db723ff7` 之上合入的只有文档：试点文档（[#1](https://github.com/Shaojie66/cindy/pull/1)）和 README 更新（[#3](https://github.com/Shaojie66/cindy/pull/3) 及后续修正）。
+**截至该日期，没有合入任何产品代码。**
 
 | 改动 | 状态 | 位置 |
 | --- | --- | --- |
 | 首个串行协同试点：计划、证据合同、重启对账规则与首次运行记录 | 已合并（[#1](https://github.com/Shaojie66/cindy/pull/1)） | [`docs/dev-rules/orchestration-pilot.md`](docs/dev-rules/orchestration-pilot.md)，并在 [`AGENTS.md`](AGENTS.md) 加了索引 |
-| 启动时对账"丢失运行进程"的本机 Orca Worker | 评审中，**未合并**（[#2](https://github.com/Shaojie66/cindy/pull/2)） | Desktop 主进程、对应测试，以及 Orca 架构与试点文档 |
+| 启动时对账「丢失运行进程」的本机 Orca Worker | 截至 2026-11-03 为 Open（[#2](https://github.com/Shaojie66/cindy/pull/2)），最新状态见 PR | Desktop 主进程、对应测试，以及 Orca 架构与试点文档 |
 
 ## 试点做了什么，结果如何
 
@@ -46,7 +46,7 @@ Worker 报告 done 最多算 `produced`，不等于验收通过。首轮不改�
 首次运行的结果：
 
 - **跑通了**：串行流程、阶段间重启后的对账、中断后的人工对账，都按证据合同完成；Worker 的 done 没有被当成验收。
-- **没跑通**：写作的 Worker 原计划用 GPT-6.1 Terra，因为原生 OpenAI 订阅没有连上，改用本地的 Pi + Ollama `qwen3:8b`。
+- **没跑通**：写作的 Worker 原计划用 GPT-6.1 Terra，原生 OpenAI 订阅没有连上，Terra 当时只能通过另一个付费来源使用，而试点没有使用该来源，所以 Terra 从未派单。随后用户决定改用本地的 Pi + Ollama `qwen3:8b`。
   它在约 23k 的可用对话窗口下，没能按修订清单写完。两轮写作、两次 Review 之后第二稿仍被拒，最终交付记为 `rejected`。
 - **发现的缺口**：应用进程和 Worker 的运行进程一起退出后再启动，Worker 在数据库里仍是 `running`。
   没有自动对账，Lead 也没被唤醒，只能靠人发现。[#2](https://github.com/Shaojie66/cindy/pull/2) 就是为这个缺口做的。
@@ -221,5 +221,5 @@ Remote 开发使用你自己的 Cindy 云端账号和现有登录态，可以继
 
 <p align="center">
   试点对你有参考价值的话：给<a href="https://github.com/makecindy/cindy/stargazers">上游</a>点个 Star，
-  在 <a href="https://github.com/Shaojie66/cindy/pulls">Pull requests</a> 里跟进 #2，有改进建议也欢迎直接提 PR。
+  <a href="https://github.com/Shaojie66/cindy/pull/2">#2</a> 是针对运行进程存活检测缺口的改动，有改进建议欢迎通过本 fork 的 <a href="https://github.com/Shaojie66/cindy/pulls">Pull requests</a> 提交。
 </p>

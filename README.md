@@ -1,4 +1,4 @@
-<!-- README_SYNC: source=0b0eae71; updated=2026-11-02 -->
+<!-- README_SYNC: source=c435e784; updated=2026-11-03 -->
 
 <p align="center">
   <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
@@ -26,13 +26,13 @@
 
 ## What this fork adds
 
-As of 2026-11-02, this fork's `main` is upstream `main` at `db723ff7` plus one documentation commit.
-**No product code has changed.**
+As of 2026-11-03, this fork's `main` has merged only documentation on top of upstream `main` at `db723ff7`: the pilot docs ([#1](https://github.com/Shaojie66/cindy/pull/1)) and README updates ([#3](https://github.com/Shaojie66/cindy/pull/3) and subsequent corrections).
+**No product code has been merged as of that date.**
 
 | Change | Status | Where |
 | --- | --- | --- |
 | First serial collaboration pilot: plan, evidence contract, restart reconciliation rules, and the first-run record | Merged ([#1](https://github.com/Shaojie66/cindy/pull/1)) | [`docs/dev-rules/orchestration-pilot.md`](docs/dev-rules/orchestration-pilot.md), indexed from [`AGENTS.md`](AGENTS.md) |
-| On startup, reconcile local Orca Workers whose runtime process is gone | In review, **not merged** ([#2](https://github.com/Shaojie66/cindy/pull/2)) | Desktop main process, its tests, and the Orca architecture and pilot docs |
+| On startup, reconcile local Orca Workers whose runtime process is gone | Open as of 2026-11-03 ([#2](https://github.com/Shaojie66/cindy/pull/2)); see the PR for its current status | Desktop main process, its tests, and the Orca architecture and pilot docs |
 
 ## The pilot and what happened
 
@@ -50,7 +50,8 @@ Results of the first run:
 - **Worked**: the serial flow, reconciliation after a planned restart between stages, and manual reconciliation
   after an interruption all followed the evidence contract. A Worker's done was never treated as acceptance.
 - **Did not work**: the writing Worker was planned to use GPT-6.1 Terra. The native OpenAI subscription was not
-  connected, so it switched to a local Pi + Ollama `qwen3:8b`. With roughly 23k tokens of usable conversation window,
+  connected. Terra was available only through another paid source, which the pilot did not use, so Terra was never dispatched. The user then chose to use
+  local Pi + Ollama `qwen3:8b`. With roughly 23k tokens of usable conversation window,
   it could not finish the revision checklist. After two writing rounds and two reviews the second draft was still
   rejected, and the final delivery was recorded as `rejected`.
 - **Gap found**: when the app process and the Worker's runtime exit together, the Worker is still `running` in the
@@ -253,5 +254,5 @@ for this project's copyright and attribution information.
 
 <p align="center">
   If the pilot is useful to you: star <a href="https://github.com/makecindy/cindy/stargazers">upstream</a>,
-  follow #2 in this fork's <a href="https://github.com/Shaojie66/cindy/pulls">pull requests</a>, and send improvements as a PR.
+  <a href="https://github.com/Shaojie66/cindy/pull/2">#2</a> addresses the runtime liveness gap; send improvements through this fork's <a href="https://github.com/Shaojie66/cindy/pulls">pull requests</a>.
 </p>
