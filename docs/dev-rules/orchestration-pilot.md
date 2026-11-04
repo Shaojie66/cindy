@@ -177,11 +177,13 @@ Review 2 暴露两点限制，后续试点应先改设计再复用：其一，�
 不能只凭“恢复成功”的模型自述。首轮不验证任意时点 crash、跨设备或外部副作用去重。
 如果暴露持久欠回报或强制门禁缺口，再单独提出可选 WorkflowRun 的最小设计及 schema 审批。
 
-另一个候选缺口是存活检测（实测见 §7「存活检测缺口」）：Worker 为 running，但对应 runtime
-已不存在。候选做法是确定性判断，不另起监督 Agent：发现两者不一致时标为异常并唤醒 Lead，
-由 Lead 按本节规则对账，不自动重派。外部 Watchdog 思路参考 DeepSeek Harness 团队的
-Super-agent 设计文章（2026-10-31，研究原型，未核验其实现）；进入产品前单独出方案。
-若检测覆盖跨设备 Worker，还须回答[远程与移动适配](remote-and-mobile-adaptation.md)的「故障半径三问」。
+另一个缺口是存活检测（实测见 §7「存活检测缺口」）：Worker 为 running，但对应 runtime
+已不存在。已按确定性判断落地为启动对账，不另起监督 Agent：上一代进程留下的本机 running
+Worker 满足判据时标为 `error`，丢失的一轮是 Lead 派的活时唤醒 Lead，由 Lead 按本节规则对账，
+不自动重派。判据、写入、通知与已知边界以 [Orca 架构](orca-team-architecture.md)「Worker 运行态」
+第 13 条为准。外部 Watchdog 思路参考 DeepSeek Harness 团队的 Super-agent 设计文章
+（2026-10-31，研究原型，未核验其实现）。跨设备 Worker 不在范围内；要扩展到它们，须先回答
+[远程与移动适配](remote-and-mobile-adaptation.md)的「故障半径三问」。
 
 ## 7. 环境、授权与验证记录
 
@@ -252,7 +254,30 @@ OpenAI 登录如需新凭证由用户在新沙箱中完成，Agent 不复制其�
   `restart:desktop:remote`（按代码阅读不应命中本 checkout）。
 - 存活检测缺口（已实测）：本地 Worker 只在会话回合的终态事件中离开 running（`orcaTeamService.ts`
   的 terminal 处理）。实例与 Pi 一起退出时不产生终态事件；重启后数据库中 Worker 仍为 running
-  （`restart-after-02.json`），没有自动对账，Lead 也未被唤醒，靠操作者人工发现。
+  （`restart-after-02.json`），没有自动对账，Lead 也未被唤醒，靠操作者人工发现。后续已补启动对账，
+  见 [Orca 架构](orca-team-architecture.md)「Worker 运行态」第 13 条；本次试点记录的是补之前的行为。
+- 启动对账实机演练（同一沙箱、另建 Lead 与本地 Pi Worker，证据在运行目录之外的
+  `2026-11-02-lost-runtime-drill/`）：Lead 派活后回合中 SIGTERM（日志为 before-quit）与 SIGKILL
+  （无退出记录、残留已死 owner 的租约）两种退出，重启后 Worker 都被标为 error，Lead 各收到恰好一条
+  异常通知，没有第二次派单或自动续跑；Worker 已是 error 时再重启、Worker 空闲正常退出再重启，都没有
+  状态变化或新通知；用户直接对 Worker 发消息后中断，重启后标 error、不通知 Lead。正常完成回报不受影响。
+  观察：重启后的「继续上次中断的任务」弹窗默认勾选 Worker；用户在对账之后点「继续」，Worker 回到
+  running 并完成，这一轮结果不会回报 Lead（对账不建欠回报账）。是否默认勾选 Worker、继续后的结果
+  是否回报 Lead，属于待定产品问题。
+- 启动对账修复后复测（2026-11-04，`c09f3f49`，同一沙箱与演练团队，Worker 用本机 qwen3:8b，证据在
+  `2026-11-04-lost-runtime-drill-r2/`）：
+  - Lead 派活后回合中 SIGTERM：Worker 标 error，Lead 收到恰好一条通知（含「排队消息处于暂停状态」一句），
+    没有重派或续跑。
+  - 派活后再排一条 Lead 跟进消息、回合中 SIGKILL：重启时跟进消息从崩溃快照恢复为暂停队列，Worker 照样
+    标 error，Lead 收到一条通知；跟进消息留在暂停队列里，没有自动发出，已死 owner 的租约被清掉。
+  - Worker 与 Lead 同时在跑时 SIGTERM：重启后 Worker 标 error，Lead 处于中断状态，77 秒内没有通知；
+    模拟在 Lead 上点「忽略」后 32 秒，下一次每分钟复查把通知送达，全程只有一条。
+  - Worker 已是 error 时再重启：没有对账、没有新通知。
+  - 投递被拒后重投没有在真机上强行制造，仍只有单测覆盖；这次启动时通知都是第一次就被接受。
+  观察：Worker 队列因重启处于暂停时，Lead 新派的活（UI 派单同一路径）返回 `ok`、`wakeKind: queued`，
+  但排在暂停队列后面不会执行，直到用户在 Worker 任务里放行；通知已经告诉 Lead 队列暂停要等用户，
+  但派单返回值本身看不出来。这是既有的队列行为，不是本次修复引入的，是否让 Orca 派单提示或放行
+  暂停队列属于待定产品问题。
 - 用户批准后把 Ollama 上下文调到 40,960（LaunchAgent 环境变量，重载后实测加载值 40,960，
   见 `evidence/ollama-context-01.json`）。重启实例对账后，Lead 只给同一 Writer 补发一条简短续执行
   消息（原派单已在原生历史中），Writer 产出 draft-v2 并按要求文字回报终态与路径。Review 2 的

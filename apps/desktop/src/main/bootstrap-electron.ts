@@ -806,6 +806,7 @@ import {
   tryGetBotDelegationService,
   restoreBotRuntimeForCurrentOwner,
   restoreOrcaRemoteWorkersForCurrentOwner,
+  reconcileLostOrcaWorkersForCurrentOwner,
   stopOrcaRemoteWorkersForOwnerBoundary,
   isSessionTurnPendingCompletion,
   isSessionInTurn,
@@ -9588,6 +9589,7 @@ app.on('ready', async () => {
       // covering both possible splash/login orderings without duplicate runs.
       void restoreBotRuntimeForCurrentOwner();
       void restoreOrcaRemoteWorkersForCurrentOwner();
+      void reconcileLostOrcaWorkersForCurrentOwner();
       startReadyWorktreeMaintenance();
       // An Agent-approved update restarted the app: write its outcome back to the task.
       void deliverPendingAgentAppUpdateResult();

@@ -246,21 +246,11 @@ export function isInterruptedTurnError(signals: InterruptedTurnErrorSignals): bo
 }
 
 /**
- * 这条即将落库的 user 消息是不是**自动补发**的续跑指令。
- *
- * 唯一判据是 `agentMeta.autoResume`（coordinator → makerSendTransaction 一路透传，
- * 见 AgentInputQueuedMessage.autoResume）。**刻意不看正文**：续跑指令的文本是共享
- * 常量，用户完全可以手动发一条一模一样的内容，按文本判会把人类动作误判成自动动作。
- *
- * 用途是在「人工介入 → 重置连续失败计数」时排除自动补发的那条消息：不排除就等于
- * 自己给自己重置，连续 N 次失败后停下等人这条保证会失效。抽成纯函数是为了让这个
- * 判据只有一份、且能被单测锁住——它长在 register 的巨型 wiring 里时既测不到也容易
- * 被改坏。
+ * 这条即将落库的 user 消息是不是**自动补发**的续跑指令。判据只有一份，定义在
+ * `shared/interruptedTurn.ts`（不依赖 maker-core，localDb 也能直接用）；这里转出，
+ * 保持既有 import 路径。
  */
-export function isAutoResumeUserMessage(agentMeta: unknown): boolean {
-  if (!agentMeta || typeof agentMeta !== 'object') return false;
-  return (agentMeta as { autoResume?: unknown }).autoResume === true;
-}
+export { isAutoResumeUserMessage } from '../../shared/interruptedTurn.js';
 
 /**
  * 这个 agent 事件算不算「模型有实质产出」——即连续失败计数该不该归零、上一次重连该不该

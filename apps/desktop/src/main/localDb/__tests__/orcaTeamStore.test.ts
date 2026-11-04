@@ -570,6 +570,122 @@ describe('orcaTeamStore', () => {
     ]);
   });
 
+  // Startup reconciliation of lost local Worker runtimes (orca-team-architecture.md,
+  // Worker 运行态 #13; pilot §7). Before it, a Worker left running by a dead Main process
+  // stayed running forever. Each row breaks exactly one durable criterion.
+  const LOST_BOOT_AT = 10_000;
+  async function seedLostRuntimeWorker(client: DbClient): Promise<void> {
+    await seedOrcaWorkers(client);
+    await client.exec(
+      'UPDATE orca_workers SET status = ?, updated_at = ? WHERE id = ?',
+      ['running', 5_000, 'worker-1'],
+    );
+    await client.exec(
+      'UPDATE sessions SET active_turn_started_at = ?, last_turn_ended_at = ?, cleared_at = ? WHERE id = ?',
+      [6_000, 4_000, 1_000, 'worker-session-1'],
+    );
+  }
+  it.each([
+    ['all durable criteria hold', null, ['worker-1']],
+    ['status is no longer running', "UPDATE orca_workers SET status = 'error' WHERE id = 'worker-1'", []],
+    ['runtime released by idle watcher', "UPDATE orca_workers SET idle_since = 1 WHERE id = 'worker-1'", []],
+    ['Worker runs on another device', "UPDATE orca_workers SET execution_device_id = 'dev-b' WHERE id = 'worker-1'", []],
+    ['SSH Worker', "UPDATE sessions SET remote_host_id = 'host-1' WHERE id = 'worker-session-1'", []],
+    ['Agent runs on another device', "UPDATE sessions SET agent_device_id = 'dev-b' WHERE id = 'worker-session-1'", []],
+    ['team ended', "UPDATE orca_teams SET status = 'completed' WHERE id = 'team-1'", []],
+    ['Worker task archived', "UPDATE sessions SET status = 'archived' WHERE id = 'worker-session-1'", []],
+    ['running written after boot', "UPDATE orca_workers SET updated_at = 10000 WHERE id = 'worker-1'", []],
+    ['turn started after boot', "UPDATE sessions SET active_turn_started_at = 10000 WHERE id = 'worker-session-1'", []],
+    ['last turn already ended', "UPDATE sessions SET last_turn_ended_at = 6000 WHERE id = 'worker-session-1'", []],
+    ['turn hidden by /clear', "UPDATE sessions SET cleared_at = 6000 WHERE id = 'worker-session-1'", []],
+  ] as const)('lists a lost-runtime Worker only when %s', async (_name, mutation, expected) => {
+    const { listLostRuntimeWorkerCandidates } = await import('../orcaTeamStore.js');
+    const client = createTestDbClient();
+    setCurrentDbClient(client, 'test-user');
+    await seedLostRuntimeWorker(client);
+    if (mutation) await client.exec(mutation);
+
+    const rows = await listLostRuntimeWorkerCandidates(LOST_BOOT_AT);
+    expect(rows.map((row) => row.workerId)).toEqual(expected);
+    if (expected.length) {
+      expect(rows[0]).toEqual({
+        workerId: 'worker-1', teamId: 'team-1', sessionId: 'worker-session-1',
+        leadSessionId: 'lead-session-1', updatedAt: 5_000, turnStartedAt: 6_000,
+      });
+    }
+  });
+
+  const LOST_CAS = {
+    workerId: 'worker-1', sessionId: 'worker-session-1', observedUpdatedAt: 5_000, turnStartedAt: 6_000,
+  } as const;
+
+  it.each([
+    ['nothing moved since the observation', null, {}, true],
+    ['the Worker row was written again', "UPDATE orca_workers SET updated_at = 5001 WHERE id = 'worker-1'", {}, false],
+    // A shared-userData peer starting a turn leaves the running Worker row untouched.
+    ['a peer started a newer turn', "UPDATE sessions SET active_turn_started_at = 7000 WHERE id = 'worker-session-1'", {}, false],
+    ['the observed turn has since ended', "UPDATE sessions SET last_turn_ended_at = 6500 WHERE id = 'worker-session-1'", {}, false],
+    ['the session was cleared', "UPDATE sessions SET cleared_at = 6500 WHERE id = 'worker-session-1'", {}, false],
+    [
+      'a peer holds the turn lease',
+      "INSERT INTO messages (id, client_id, session_id, role, content, created_at, rewind_at) VALUES ('lease-1', 'session:turn-lease:v1:peer', 'worker-session-1', 'assistant', '', 7000, 7000)",
+      {},
+      false,
+    ],
+    ['the session id does not belong to the Worker', null, { sessionId: 'worker-session-2' }, false],
+  ] as const)('marks a lost Worker error only when %s', async (_name, mutation, casOverride, marked) => {
+    const { markWorkerErrorIfRunningSince } = await import('../orcaTeamStore.js');
+    const client = createTestDbClient();
+    setCurrentDbClient(client, 'test-user');
+    await seedLostRuntimeWorker(client);
+    if (mutation) await client.exec(mutation);
+
+    await expect(markWorkerErrorIfRunningSince({ ...LOST_CAS, ...casOverride }, 20_000)).resolves.toBe(marked);
+    const row = await client.queryOne<{ status: string; idle_since: number | null }>(
+      'SELECT status, idle_since FROM orca_workers WHERE id = ?',
+      ['worker-1'],
+    );
+    expect(row).toEqual({ status: marked ? 'error' : 'running', idle_since: null });
+  });
+
+  it('reads the input that started a lost turn, skipping hidden and out-of-turn rows', async () => {
+    const { readWorkerLostTurnInputOrigin } = await import('../orcaTeamStore.js');
+    const client = createTestDbClient();
+    setCurrentDbClient(client, 'test-user');
+    await seedLostRuntimeWorker(client);
+    const insert = (id: string, role: string, createdAt: number, agentMeta: unknown, rewindAt: number | null = null) =>
+      client.exec(
+        'INSERT INTO messages (id, client_id, session_id, role, content, agent_meta, created_at, rewind_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [id, id, 'worker-session-1', role, '""', agentMeta === null ? null : JSON.stringify(agentMeta), createdAt, rewindAt],
+      );
+    await insert('before-clear', 'user', 900, { origin: { kind: 'user' } });
+    await insert('lead-dispatch', 'user', 5_500, { origin: { kind: 'orca', senderSessionId: 'lead-session-1' } });
+    await insert('auto-resume', 'user', 5_900, { autoResume: true });
+    await insert('rewound', 'user', 5_950, { origin: { kind: 'user' } }, 5_960);
+    await insert('lease-row', 'assistant', 5_990, null, 5_990);
+    await insert('steer-after-start', 'user', 6_500, { origin: { kind: 'user' } });
+
+    await expect(readWorkerLostTurnInputOrigin('worker-session-1', 6_000)).resolves.toEqual({
+      kind: 'orca', senderSessionId: 'lead-session-1',
+    });
+    await expect(readWorkerLostTurnInputOrigin('worker-session-1', 950)).resolves.toBeNull();
+  });
+
+  it.each([
+    ['idle active Lead', 'UPDATE sessions SET active_turn_started_at = 3000, last_turn_ended_at = 3500 WHERE id = ?', 'ready'],
+    ['Lead turn running in this process', 'UPDATE sessions SET active_turn_started_at = 12000, last_turn_ended_at = 3500 WHERE id = ?', 'ready'],
+    ['Lead itself interrupted before boot', 'UPDATE sessions SET active_turn_started_at = 7000, last_turn_ended_at = 3500 WHERE id = ?', 'interrupted'],
+    ['Lead task archived', "UPDATE sessions SET status = 'archived' WHERE id = ?", 'gone'],
+  ] as const)('decides whether a lost Worker may wake its Lead: %s', async (_name, mutation, expected) => {
+    const { readLeadWorkerNoticeReadiness } = await import('../orcaTeamStore.js');
+    const client = createTestDbClient();
+    setCurrentDbClient(client, 'test-user');
+    await seedOrcaWorkers(client);
+    await client.exec(mutation, ['lead-session-1']);
+
+    await expect(readLeadWorkerNoticeReadiness('lead-session-1', LOST_BOOT_AT)).resolves.toBe(expected);
+  });
+
   it('isOrphanedTeamInit:零 worker 且无存活 reservation 判孤儿;活租约或任意 worker 行则不判 (#3555)', async () => {
     const { isOrphanedTeamInit } = await import('../orcaTeamStore.js');
     const client = createTestDbClient();
@@ -713,6 +829,17 @@ describe('orcaTeamStore', () => {
         updated_at INTEGER NOT NULL
       );
       CREATE UNIQUE INDEX uniq_orca_workers_team_label ON orca_workers (team_id, lower(label));
+
+      CREATE TABLE messages (
+        id TEXT PRIMARY KEY,
+        client_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        agent_meta TEXT,
+        created_at INTEGER NOT NULL,
+        rewind_at INTEGER
+      );
     `);
     const db = drizzle(dbHandle, { schema });
     const client: DbClient = {
